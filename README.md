@@ -23,6 +23,19 @@ Checksum files are in BSD tagged form, as emitted by OpenBSD `sha256(1)` and by
 SHA256 (s3_v1.1.2_linux_amd64.ptar) = e285ed22e6...
 ```
 
+To generate one by hand:
+
+```sh
+sha256(1)                                   # OpenBSD
+sha256sum --tag <file> > <file>.sum         # Linux, coreutils >= 8.26
+```
+
+GNU `sha256sum --tag` output is byte-identical to what `krossbuild` writes. Both
+`sha256sum -c` and `shasum -a 256 -c` auto-detect tagged input, so verifying a
+`.sum` needs no special flag on either platform. Run them from the directory
+containing the file: tagged form records whatever path it was given, and
+`krossbuild` always records the bare basename.
+
 Signatures are [signify](https://man.openbsd.org/signify) format — ed25519,
 detached, wire-compatible with `signify(1)`, so artifacts can be verified
 without this tool:
