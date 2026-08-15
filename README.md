@@ -37,21 +37,39 @@ containing the file: tagged form records whatever path it was given, and
 `krossbuild` always records the bare basename.
 
 Signatures are [signify](https://man.openbsd.org/signify) format — ed25519,
-detached, wire-compatible with `signify(1)`, so artifacts can be verified
+**embedded**, wire-compatible with `signify(1)`, so artifacts can be verified
 without this tool:
 
 ```
-$ signify -V -p plakar-20260815.pub -m foo.ptar.sum -x foo.ptar.sum.sig
+$ signify -V -e -p plakar-20260815.pub -x foo.ptar.sum.sig -m /dev/stdout
 Signature Verified
+SHA256 (foo.ptar) = e285ed22e6...
 ```
+
+An embedded signature carries the checksum line inside the `.sig`, after the
+signature:
+
+```
+untrusted comment: verify with plakar-20260815.pub
+RWSoM/ECJgcd3O1Vf9FcLYCI+lPd5kSRKg4b2DV8nVrM9xNMBsMYa1ubwd…
+SHA256 (foo.ptar) = e285ed22e60232c37c2604d13c46e48af3c5e40044542fe5fe3b86b9f7e62c7f
+```
+
+The standalone `.sum` is written and shipped as well, so three files travel per
+artifact: `foo.ptar`, `foo.ptar.sum`, `foo.ptar.sum.sig`. The embedded copy is
+the one that is signed; the standalone `.sum` is a convenience so stock
+`sha256sum -c` can check the artifact with no signify involved. If the two ever
+disagree, the embedded copy is authoritative — and `sumsign` re-signs to bring
+them back into line.
 
 ## Existing signatures are verified, not trusted
 
 A `.sum` that already has a `.sum.sig` is not skipped on the strength of the
-signature file existing. The signature is checked against the `.sum` first:
+signature file existing. Both the signature and the embedded copy are checked
+against the standalone `.sum` first:
 
-- valid → skipped
-- present but stale → re-signed
+- signature valid **and** embedded copy matches the `.sum` → skipped
+- signature stale, or embedded copy disagrees with the `.sum` → re-signed
 - absent → signed
 
 A `.sum` regenerated after its signature was written (rebuilt artifact, edited
@@ -67,6 +85,10 @@ determines what the signature tells verifiers to check against:
 ```
 plakar-20260815.sec  →  untrusted comment: verify with plakar-20260815.pub
 ```
+
+Only the basename is used. `signify(1)` embeds whatever path it was invoked
+with, so signing with `-s /var/lib/build/.signify/plakar-20260815.sec` would
+otherwise publish the layout of the signing host in every signature.
 
 Dating the key file is what makes rotation legible: a signature names the exact
 public key that verifies it, so several keys can be in circulation at once.

@@ -118,8 +118,14 @@ func signSum(
 		act = actionResign
 
 		if !force {
-			existing, err := readSig(sigPath(path))
-			if err == nil && verifyMessage(seckey, keynum, msg, existing) {
+			existing, embedded, err := readSig(sigPath(path))
+
+			// The embedded copy is the signed one, so a .sum that no
+			// longer matches it is stale even when the signature itself
+			// still verifies.
+			if err == nil &&
+				bytes.Equal(embedded, msg) &&
+				verifyMessage(seckey, keynum, msg, existing) {
 				return actionSkip, nil
 			}
 		}
@@ -129,6 +135,7 @@ func signSum(
 		sigPath(path),
 		comment,
 		signMessage(seckey, keynum, msg),
+		msg,
 	); err != nil {
 		return actionSkip, err
 	}

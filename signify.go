@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"path/filepath"
 	"strings"
 
 	"github.com/ebfe/bcrypt_pbkdf"
@@ -49,38 +50,46 @@ type sig struct {
 }
 
 // readb64file parses a signify file: a "untrusted comment: ..." line followed
-// by one line of base64. It returns the comment and the decoded payload.
-func readb64file(path string) (string, []byte, error) {
+// by one line of base64. Anything after that line is the embedded message, and
+// is returned as msg (nil when the file is detached).
+func readb64file(path string) (comment string, buf []byte, msg []byte, err error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
-		return "", nil, err
+		return "", nil, nil, err
 	}
 
 	lines := strings.SplitN(string(data), "\n", 3)
 	if len(lines) < 2 {
-		return "", nil, fmt.Errorf("%s: invalid format", path)
+		return "", nil, nil, fmt.Errorf("%s: invalid format", path)
 	}
 
 	if !strings.HasPrefix(lines[0], commenthdr) {
-		return "", nil, fmt.Errorf("%s: missing comment header", path)
+		return "", nil, nil, fmt.Errorf("%s: missing comment header", path)
 	}
 
-	comment := strings.TrimPrefix(lines[0], commenthdr)
+	comment = strings.TrimPrefix(lines[0], commenthdr)
 
-	buf, err := base64.StdEncoding.DecodeString(lines[1])
+	buf, err = base64.StdEncoding.DecodeString(lines[1])
 	if err != nil {
-		return "", nil, fmt.Errorf("%s: invalid base64: %w", path, err)
+		return "", nil, nil, fmt.Errorf("%s: invalid base64: %w", path, err)
 	}
 
 	if len(buf) < 2 || string(buf[:2]) != pkalg {
-		return "", nil, fmt.Errorf("%s: unsupported algorithm", path)
+		return "", nil, nil, fmt.Errorf("%s: unsupported algorithm", path)
 	}
 
-	return comment, buf, nil
+	if len(lines) == 3 && lines[2] != "" {
+		msg = []byte(lines[2])
+	}
+
+	return comment, buf, msg, nil
 }
 
-// writeb64file writes a signify file with the given comment and payload.
-func writeb64file(path, comment string, data any) error {
+// writeb64file writes a signify file with the given comment and payload. When
+// msg is non-nil it is appended after the base64 line, which is signify's
+// embedded mode (-e): the signature and the message it covers become one file
+// and cannot drift apart.
+func writeb64file(path, comment string, data any, msg []byte) error {
 	if len(commenthdr)+len(comment) >= commentmaxlen {
 		return errors.New("comment too long")
 	}
@@ -98,7 +107,7 @@ func writeb64file(path, comment string, data any) error {
 		base64.StdEncoding.EncodeToString(buf.Bytes()),
 	)
 
-	return os.WriteFile(path, []byte(content), 0644)
+	return os.WriteFile(path, append([]byte(content), msg...), 0644)
 }
 
 // decryptSeckey decrypts a secret key with the given passphrase. A key with
@@ -152,7 +161,7 @@ func decryptSeckey(enc *enckey, passphrase []byte) (ed25519.PrivateKey, error) {
 func loadSeckey(path string, passphrase []byte) (ed25519.PrivateKey, [keynumlen]byte, string, error) {
 	var enc enckey
 
-	comment, buf, err := readb64file(path)
+	comment, buf, _, err := readb64file(path)
 	if err != nil {
 		return nil, enc.Keynum, "", err
 	}
@@ -168,8 +177,11 @@ func loadSeckey(path string, passphrase []byte) (ed25519.PrivateKey, [keynumlen]
 
 	sigcomment := fmt.Sprintf("signature from %s", comment)
 
-	if strings.HasSuffix(path, ".sec") {
-		sigcomment = verifywith + strings.TrimSuffix(path, ".sec") + ".pub"
+	// Only the basename: signatures ship publicly, and signify(1) would
+	// otherwise embed whatever path the key was invoked with, disclosing the
+	// layout of the signing host.
+	if base := filepath.Base(path); strings.HasSuffix(base, ".sec") {
+		sigcomment = verifywith + strings.TrimSuffix(base, ".sec") + ".pub"
 	}
 
 	return seckey, enc.Keynum, sigcomment, nil
@@ -179,7 +191,7 @@ func loadSeckey(path string, passphrase []byte) (ed25519.PrivateKey, [keynumlen]
 func isEncrypted(path string) (bool, error) {
 	var enc enckey
 
-	_, buf, err := readb64file(path)
+	_, buf, _, err := readb64file(path)
 	if err != nil {
 		return false, err
 	}
@@ -202,20 +214,21 @@ func signMessage(seckey ed25519.PrivateKey, keynum [keynumlen]byte, msg []byte) 
 	return &s
 }
 
-// readSig loads a detached signature file.
-func readSig(path string) (*sig, error) {
+// readSig loads a signature file, returning the embedded message when the
+// signature carries one.
+func readSig(path string) (*sig, []byte, error) {
 	var s sig
 
-	_, buf, err := readb64file(path)
+	_, buf, msg, err := readb64file(path)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 
 	if err := binary.Read(bytes.NewReader(buf), binary.BigEndian, &s); err != nil {
-		return nil, fmt.Errorf("%s: %w", path, err)
+		return nil, nil, fmt.Errorf("%s: %w", path, err)
 	}
 
-	return &s, nil
+	return &s, msg, nil
 }
 
 // verifyMessage checks a detached signature against msg using the public key
